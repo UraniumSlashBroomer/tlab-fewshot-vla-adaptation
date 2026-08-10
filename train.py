@@ -98,6 +98,10 @@ def _write_json(path: Path, contents: dict) -> None:
     path.write_text(json.dumps(contents, indent=2, sort_keys=True) + "\n")
 
 
+def _torch_dtype(name: str) -> torch.dtype:
+    return getattr(torch, name)
+
+
 def _save_checkpoint(
     output_dir: Path,
     step: int,
@@ -149,6 +153,7 @@ def main(cfg: DictConfig) -> None:
     policy = load_libero_policy(
         cfg.run.init_checkpoint,
         cfg.runtime.device,
+        model_dtype=_torch_dtype(cfg.runtime.dtype),
         action_chunk_size=cfg.policy.action_chunk_size,
         action_execution_steps=cfg.policy.action_execution_steps,
         freeze_vision_encoder=cfg.policy.freeze_vision_encoder,
@@ -167,7 +172,8 @@ def main(cfg: DictConfig) -> None:
         optimizer,
         lambda step: _lr_multiplier(step, steps, warmup_steps, min_lr_ratio),
     )
-    scaler = torch.amp.GradScaler("cuda")
+    amp_dtype = _torch_dtype(cfg.runtime.dtype)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_dtype == torch.float16)
 
     run_metadata = {
         "run": OmegaConf.to_container(cfg.run, resolve=True),
@@ -199,7 +205,7 @@ def main(cfg: DictConfig) -> None:
         for _ in range(cfg.training.gradient_accumulation_steps):
             raw_batch = next(data_iterator)
             batch = preprocessor(raw_batch)
-            with torch.autocast(device_type="cuda", dtype=torch.float16):
+            with torch.autocast(device_type="cuda", dtype=amp_dtype):
                 loss, loss_dict = policy(batch)
             scaler.scale(loss / cfg.training.gradient_accumulation_steps).backward()
             step_loss += loss.item()

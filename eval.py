@@ -15,6 +15,10 @@ def _write_json(path: Path, contents: dict) -> None:
     path.write_text(json.dumps(contents, indent=2, sort_keys=True) + "\n")
 
 
+def _torch_dtype(name: str) -> torch.dtype:
+    return getattr(torch, name)
+
+
 def _policy_dir(checkpoint: str) -> Path:
     path = Path(checkpoint)
     return path / "policy" if (path / "policy").exists() else path
@@ -93,7 +97,7 @@ def main(cfg: DictConfig) -> None:
     os.environ["MUJOCO_GL"] = cfg.runtime.mujoco_gl
     os.environ["MPLCONFIGDIR"] = str(matplotlib_config_dir)
     stats = torch.load(policy_dir / "dataset_stats.pt", map_location="cpu", weights_only=True)
-    policy = load_libero_policy(policy_dir, cfg.runtime.device)
+    policy = load_libero_policy(policy_dir, cfg.runtime.device, model_dtype=_torch_dtype(cfg.runtime.dtype))
     preprocessor, postprocessor = make_libero_processors(policy.config, stats)
 
     task_results = {}

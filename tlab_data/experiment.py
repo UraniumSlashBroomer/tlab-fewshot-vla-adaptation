@@ -24,6 +24,7 @@ def load_libero_policy(
     checkpoint: str | Path,
     device: str,
     *,
+    model_dtype: torch.dtype | None = None,
     action_chunk_size: int | None = None,
     action_execution_steps: int | None = None,
     freeze_vision_encoder: bool | None = None,
@@ -46,7 +47,10 @@ def load_libero_policy(
     if train_state_proj is not None:
         config.train_state_proj = train_state_proj
     config.device = device
-    return SmolVLAPolicy.from_pretrained(checkpoint, config=config, strict=True)
+    policy = SmolVLAPolicy.from_pretrained(checkpoint, config=config, strict=True)
+    if model_dtype is not None:
+        policy.to(dtype=model_dtype)
+    return policy
 
 
 def make_libero_processors(config: SmolVLAConfig, stats: dict[str, dict[str, torch.Tensor]]):
