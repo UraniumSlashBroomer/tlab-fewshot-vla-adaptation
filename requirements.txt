@@ -14,7 +14,7 @@ h5py==3.16.0
 robosuite==1.4.0
 bddl==1.0.1
 gym==0.25.2
-mujoco==2.3.7
+mujoco==3.2.7
 future==0.18.2
 easydict==1.13
 matplotlib==3.11.1
