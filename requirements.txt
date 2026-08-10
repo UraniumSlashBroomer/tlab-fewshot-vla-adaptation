@@ -1,8 +1,8 @@
 # Baseline environment (Linux, CUDA 11.8; compatible with Tesla P100).
 --extra-index-url https://download.pytorch.org/whl/cu118
-torch==2.5.1+cu118
-torchvision==0.20.1+cu118
-torchaudio==2.5.1+cu118
+torch==2.6.0+cu118
+torchvision==0.21.0+cu118
+torchaudio==2.6.0+cu118
 lerobot[smolvla]==0.4.4
 
 # Reproducible experiment configuration.
