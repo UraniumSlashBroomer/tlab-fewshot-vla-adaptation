@@ -3,7 +3,7 @@ output_dir: null
 
 runtime:
   device: cuda
-  dtype: float16
+  model_dtype: float32
   mujoco_gl: egl
 
 evaluation:

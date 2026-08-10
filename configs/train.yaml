@@ -36,7 +36,8 @@ training:
 
 runtime:
   device: cuda
-  dtype: float16
+  model_dtype: float32
+  amp_dtype: float16
 
 wandb:
   enabled: false

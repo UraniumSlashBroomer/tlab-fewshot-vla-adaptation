@@ -97,7 +97,11 @@ def main(cfg: DictConfig) -> None:
     os.environ["MUJOCO_GL"] = cfg.runtime.mujoco_gl
     os.environ["MPLCONFIGDIR"] = str(matplotlib_config_dir)
     stats = torch.load(policy_dir / "dataset_stats.pt", map_location="cpu", weights_only=True)
-    policy = load_libero_policy(policy_dir, cfg.runtime.device, model_dtype=_torch_dtype(cfg.runtime.dtype))
+    policy = load_libero_policy(
+        policy_dir,
+        cfg.runtime.device,
+        model_dtype=_torch_dtype(cfg.runtime.model_dtype),
+    )
     preprocessor, postprocessor = make_libero_processors(policy.config, stats)
 
     task_results = {}

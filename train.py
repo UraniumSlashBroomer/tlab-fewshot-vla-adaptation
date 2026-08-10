@@ -153,7 +153,7 @@ def main(cfg: DictConfig) -> None:
     policy = load_libero_policy(
         cfg.run.init_checkpoint,
         cfg.runtime.device,
-        model_dtype=_torch_dtype(cfg.runtime.dtype),
+        model_dtype=_torch_dtype(cfg.runtime.model_dtype),
         action_chunk_size=cfg.policy.action_chunk_size,
         action_execution_steps=cfg.policy.action_execution_steps,
         freeze_vision_encoder=cfg.policy.freeze_vision_encoder,
@@ -172,7 +172,7 @@ def main(cfg: DictConfig) -> None:
         optimizer,
         lambda step: _lr_multiplier(step, steps, warmup_steps, min_lr_ratio),
     )
-    amp_dtype = _torch_dtype(cfg.runtime.dtype)
+    amp_dtype = _torch_dtype(cfg.runtime.amp_dtype)
     scaler = torch.amp.GradScaler("cuda", enabled=amp_dtype == torch.float16)
 
     run_metadata = {
