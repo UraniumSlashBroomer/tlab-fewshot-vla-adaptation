@@ -1,0 +1,31 @@
+.venv/
+.libero/
+.cache/
+.agents/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Experiment artifacts.
+wandb/
+*.log
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+/data/
+outputs/
+tmp/
+
+# Reproducibly cloned by the README setup instructions.
+third_party/LIBERO/
+
+# Local research reading material; derived summaries remain tracked.
+research/papers/*.pdf

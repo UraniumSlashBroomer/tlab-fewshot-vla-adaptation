@@ -1,0 +1,13 @@
+# Minimal deterministic split for data-loader and overfit smoke runs.
+root: data/libero_hdf5
+fps: 20
+
+seen:
+  suite: libero_90
+  task_ids: [9]
+  demos_per_task: 2
+
+goal:
+  suite: libero_goal
+  task_ids: [0]
+  budgets: [2]

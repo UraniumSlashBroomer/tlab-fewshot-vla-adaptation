@@ -1,0 +1,21 @@
+checkpoint: null
+output_dir: null
+
+runtime:
+  device: cuda
+  mujoco_gl: egl
+
+evaluation:
+  suite: libero_goal
+  task_ids: [0, 1, 2]
+  episodes_per_task: 40
+  first_rollout_seed: 10000
+  num_envs: 4
+  language_control: false
+  language_control_task_id: null
+  videos_per_task: 0
+
+wandb:
+  enabled: false
+  project: tlab-libero
+  entity: null
