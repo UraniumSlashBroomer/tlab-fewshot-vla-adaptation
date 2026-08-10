@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
@@ -29,7 +30,10 @@ def load_libero_policy(
     train_expert_only: bool | None = None,
     train_state_proj: bool | None = None,
 ) -> SmolVLAPolicy:
-    config = SmolVLAConfig.from_pretrained(checkpoint)
+    # The checkpoint config includes a top-level policy type, so it must be
+    # dispatched through the base config class before applying LIBERO overrides.
+    config = PreTrainedConfig.from_pretrained(checkpoint)
+    assert isinstance(config, SmolVLAConfig)
     configure_for_libero(config)
     if action_chunk_size is not None:
         config.chunk_size = action_chunk_size
