@@ -173,7 +173,11 @@ def main(cfg: DictConfig) -> None:
         lambda step: _lr_multiplier(step, steps, warmup_steps, min_lr_ratio),
     )
     amp_dtype = _torch_dtype(cfg.runtime.amp_dtype)
-    scaler = torch.amp.GradScaler("cuda", enabled=amp_dtype == torch.float16)
+    scaler = torch.amp.GradScaler(
+        "cuda",
+        enabled=amp_dtype == torch.float16,
+        init_scale=cfg.training.amp_init_scale,
+    )
 
     run_metadata = {
         "run": OmegaConf.to_container(cfg.run, resolve=True),
@@ -200,17 +204,20 @@ def main(cfg: DictConfig) -> None:
     interval_loss = 0.0
     interval_start = time.perf_counter()
 
-    for step in range(1, steps + 1):
+    step = 0
+    while step < steps:
         step_loss = 0.0
         for _ in range(cfg.training.gradient_accumulation_steps):
             raw_batch = next(data_iterator)
             batch = preprocessor(raw_batch)
             with torch.autocast(device_type="cuda", dtype=amp_dtype):
                 loss, loss_dict = policy(batch)
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"Non-finite training loss before backward: {loss}")
             scaler.scale(loss / cfg.training.gradient_accumulation_steps).backward()
             step_loss += loss.item()
 
-        if step == 1:
+        if step == 0:
             has_gradient = any(
                 parameter.grad is not None for parameter in policy.parameters() if parameter.requires_grad
             )
@@ -220,11 +227,15 @@ def main(cfg: DictConfig) -> None:
         scaler.unscale_(optimizer)
         grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), cfg.training.grad_clip_norm)
         if not torch.isfinite(grad_norm):
-            raise RuntimeError(f"Non-finite gradient norm at step {step}: {grad_norm}")
+            logging.warning("non-finite gradients; reducing AMP scale from %s", scaler.get_scale())
+            optimizer.zero_grad(set_to_none=True)
+            scaler.update()
+            continue
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
         optimizer.zero_grad(set_to_none=True)
+        step += 1
 
         interval_loss += step_loss / cfg.training.gradient_accumulation_steps
 
