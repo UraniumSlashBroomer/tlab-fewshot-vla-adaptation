@@ -49,6 +49,10 @@ def _evaluate_task(cfg: DictConfig, policy, preprocessor, postprocessor, task_id
             "obs_type": "pixels_agent_pos",
             "observation_height": 128,
             "observation_width": 128,
+            "camera_name_mapping": {
+                "agentview_image": "camera1",
+                "robot0_eye_in_hand_image": "camera2",
+            },
         },
     )
     env = envs_by_suite[cfg.evaluation.suite][task_id]

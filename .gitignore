@@ -2,6 +2,7 @@
 .libero/
 .cache/
 .agents/
+SERVER.md
 __pycache__/
 *.pyc
 *.egg-info/

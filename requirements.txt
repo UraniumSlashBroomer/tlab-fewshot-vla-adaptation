@@ -13,6 +13,8 @@ wandb==0.24.2
 h5py==3.16.0
 
 # Official LIBERO environment runtime for eval.py.
+# NumPy 2.2.6 is compatible with LIBERO's Numba dependency on Python 3.12.
+numpy==2.2.6
 robosuite==1.4.0
 bddl==1.0.1
 gym==0.25.2
