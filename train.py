@@ -4,11 +4,13 @@ import itertools
 import json
 import logging
 import math
+import random
 import shutil
 import time
 from pathlib import Path
 
 import hydra
+import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
@@ -102,17 +104,71 @@ def _torch_dtype(name: str) -> torch.dtype:
     return getattr(torch, name)
 
 
+def _checkpoint_dir(path: str | Path) -> Path:
+    checkpoint_dir = Path(path)
+    if checkpoint_dir.name == "policy":
+        checkpoint_dir = checkpoint_dir.parent
+    state_path = checkpoint_dir / "training_state.pt"
+    if not state_path.exists():
+        raise FileNotFoundError(f"Resume checkpoint has no training state: {state_path}")
+    return checkpoint_dir
+
+
+def _load_resume_config(cfg: DictConfig) -> tuple[DictConfig, Path | None]:
+    if cfg.run.resume_checkpoint is None:
+        return cfg, None
+
+    checkpoint_dir = _checkpoint_dir(cfg.run.resume_checkpoint)
+    config_path = checkpoint_dir / "training_config.yaml"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Resume checkpoint has no training config: {config_path}")
+    saved_cfg = OmegaConf.load(config_path)
+    saved_cfg.run.resume_checkpoint = str(checkpoint_dir)
+    return saved_cfg, checkpoint_dir
+
+
+def _rng_state() -> dict:
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all(),
+    }
+
+
+def _restore_rng_state(state: dict) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    torch.cuda.set_rng_state_all(state["cuda"])
+
+
 def _save_checkpoint(
     output_dir: Path,
     step: int,
     policy,
     stats: dict[str, dict[str, torch.Tensor]],
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    scaler: torch.amp.GradScaler,
+    cfg: DictConfig,
     keep_last: int,
 ) -> Path:
     checkpoint_dir = output_dir / "checkpoints" / f"step_{step:06d}"
     policy_dir = checkpoint_dir / "policy"
     policy.save_pretrained(policy_dir)
     torch.save(stats, policy_dir / "dataset_stats.pt")
+    OmegaConf.save(cfg, checkpoint_dir / "training_config.yaml", resolve=True)
+    torch.save(
+        {
+            "step": step,
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "scaler": scaler.state_dict(),
+            "rng": _rng_state(),
+        },
+        checkpoint_dir / "training_state.pt",
+    )
 
     checkpoints = sorted((output_dir / "checkpoints").glob("step_*"))
     for stale_checkpoint in checkpoints[:-keep_last]:
@@ -131,18 +187,27 @@ def _configure_logging(output_dir: Path) -> None:
 
 @hydra.main(version_base=None, config_path="configs", config_name="train")
 def main(cfg: DictConfig) -> None:
+    cfg, resume_checkpoint_dir = _load_resume_config(cfg)
     if not cfg.runtime.device.startswith("cuda") or not torch.cuda.is_available():
         raise RuntimeError(f"Configured device is unavailable: {cfg.runtime.device}")
 
     output_dir = _output_dir(cfg)
-    output_dir.mkdir(parents=True, exist_ok=False)
+    if resume_checkpoint_dir is None:
+        output_dir.mkdir(parents=True, exist_ok=False)
+        OmegaConf.save(cfg, output_dir / "config.yaml", resolve=True)
+    elif not output_dir.exists():
+        raise FileNotFoundError(f"Resume output directory does not exist: {output_dir}")
     _configure_logging(output_dir)
-    OmegaConf.save(cfg, output_dir / "config.yaml", resolve=True)
     seed_everything(cfg.run.seed)
 
     steps, warmup_steps, checkpoint_every = _training_schedule(cfg)
     dataset = _dataset_from_config(cfg)
-    stats = _normalization_stats(cfg, dataset)
+    if resume_checkpoint_dir is None:
+        stats = _normalization_stats(cfg, dataset)
+        policy_checkpoint = cfg.run.init_checkpoint
+    else:
+        policy_checkpoint = resume_checkpoint_dir / "policy"
+        stats = torch.load(policy_checkpoint / "dataset_stats.pt", map_location="cpu", weights_only=True)
     dataloader = DataLoader(
         dataset,
         batch_size=cfg.training.micro_batch_size,
@@ -151,7 +216,7 @@ def main(cfg: DictConfig) -> None:
         pin_memory=True,
     )
     policy = load_libero_policy(
-        cfg.run.init_checkpoint,
+        policy_checkpoint,
         cfg.runtime.device,
         model_dtype=_torch_dtype(cfg.runtime.model_dtype),
         action_chunk_size=cfg.policy.action_chunk_size,
@@ -178,6 +243,17 @@ def main(cfg: DictConfig) -> None:
         enabled=amp_dtype == torch.float16,
         init_scale=cfg.training.amp_init_scale,
     )
+    step = 0
+    if resume_checkpoint_dir is not None:
+        training_state = torch.load(
+            resume_checkpoint_dir / "training_state.pt", map_location="cpu", weights_only=False
+        )
+        optimizer.load_state_dict(training_state["optimizer"])
+        scheduler.load_state_dict(training_state["scheduler"])
+        scaler.load_state_dict(training_state["scaler"])
+        _restore_rng_state(training_state["rng"])
+        step = training_state["step"]
+        logging.info("resumed from checkpoint step %s: %s", step, resume_checkpoint_dir)
 
     run_metadata = {
         "run": OmegaConf.to_container(cfg.run, resolve=True),
@@ -204,7 +280,6 @@ def main(cfg: DictConfig) -> None:
     interval_loss = 0.0
     interval_start = time.perf_counter()
 
-    step = 0
     while step < steps:
         step_loss = 0.0
         for _ in range(cfg.training.gradient_accumulation_steps):
@@ -261,6 +336,10 @@ def main(cfg: DictConfig) -> None:
                 step,
                 policy,
                 stats,
+                optimizer,
+                scheduler,
+                scaler,
+                cfg,
                 cfg.training.keep_last_checkpoints,
             )
             logging.info("saved checkpoint: %s", policy_dir)

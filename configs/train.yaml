@@ -8,6 +8,7 @@ run:
   task_id: null
   budget: null
   init_checkpoint: lerobot/smolvla_base
+  resume_checkpoint: null
   output_dir: null
 
 policy:
