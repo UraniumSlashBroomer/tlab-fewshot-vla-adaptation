@@ -1,6 +1,5 @@
 """Train the fixed SmolVLA LIBERO baseline from raw HDF5 demonstrations."""
 
-import itertools
 import json
 import logging
 import math
@@ -155,10 +154,13 @@ def _save_checkpoint(
     keep_last: int,
 ) -> Path:
     checkpoint_dir = output_dir / "checkpoints" / f"step_{step:06d}"
-    policy_dir = checkpoint_dir / "policy"
+    temporary_dir = checkpoint_dir.with_suffix(".tmp")
+    if temporary_dir.exists():
+        shutil.rmtree(temporary_dir)
+    policy_dir = temporary_dir / "policy"
     policy.save_pretrained(policy_dir)
     torch.save(stats, policy_dir / "dataset_stats.pt")
-    OmegaConf.save(cfg, checkpoint_dir / "training_config.yaml", resolve=True)
+    OmegaConf.save(cfg, temporary_dir / "training_config.yaml", resolve=True)
     torch.save(
         {
             "step": step,
@@ -167,13 +169,14 @@ def _save_checkpoint(
             "scaler": scaler.state_dict(),
             "rng": _rng_state(),
         },
-        checkpoint_dir / "training_state.pt",
+        temporary_dir / "training_state.pt",
     )
+    temporary_dir.rename(checkpoint_dir)
 
     checkpoints = sorted((output_dir / "checkpoints").glob("step_*"))
     for stale_checkpoint in checkpoints[:-keep_last]:
         shutil.rmtree(stale_checkpoint)
-    return policy_dir
+    return checkpoint_dir / "policy"
 
 
 def _configure_logging(output_dir: Path) -> None:
@@ -274,7 +277,7 @@ def main(cfg: DictConfig) -> None:
             config=OmegaConf.to_container(cfg, resolve=True),
         )
 
-    data_iterator = itertools.cycle(dataloader)
+    data_iterator = iter(dataloader)
     policy.train()
     optimizer.zero_grad(set_to_none=True)
     interval_loss = 0.0
@@ -283,7 +286,11 @@ def main(cfg: DictConfig) -> None:
     while step < steps:
         step_loss = 0.0
         for _ in range(cfg.training.gradient_accumulation_steps):
-            raw_batch = next(data_iterator)
+            try:
+                raw_batch = next(data_iterator)
+            except StopIteration:
+                data_iterator = iter(dataloader)
+                raw_batch = next(data_iterator)
             batch = preprocessor(raw_batch)
             with torch.autocast(device_type="cuda", dtype=amp_dtype):
                 loss, loss_dict = policy(batch)
@@ -331,6 +338,7 @@ def main(cfg: DictConfig) -> None:
             interval_start = time.perf_counter()
 
         if step % checkpoint_every == 0 or step == steps:
+            logging.info("saving checkpoint at step %s", step)
             policy_dir = _save_checkpoint(
                 output_dir,
                 step,
