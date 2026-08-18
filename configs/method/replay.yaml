@@ -1,0 +1,6 @@
+name: seen_replay_3_to_1
+
+replay:
+  enabled: true
+  target_microbatches: 3
+  seen_microbatches: 1

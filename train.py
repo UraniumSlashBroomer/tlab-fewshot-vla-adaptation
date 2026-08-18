@@ -23,16 +23,27 @@ from tlab_data.experiment import (
 from tlab_data.libero_hdf5 import LiberoHDF5Dataset
 
 
-def _dataset_from_config(cfg: DictConfig) -> LiberoHDF5Dataset:
+def _make_dataset(
+    cfg: DictConfig,
+    suite: str,
+    task_ids: list[int],
+    demos_per_task: int,
+) -> LiberoHDF5Dataset:
+    return LiberoHDF5Dataset(
+        cfg.data.root,
+        suite,
+        task_ids,
+        demos_per_task,
+        cfg.policy.action_chunk_size,
+    )
+
+
+def _datasets_from_config(cfg: DictConfig) -> dict[str, LiberoHDF5Dataset]:
     if cfg.run.stage == "seen":
         split = cfg.data.seen
-        return LiberoHDF5Dataset(
-            cfg.data.root,
-            split.suite,
-            list(split.task_ids),
-            split.demos_per_task,
-            cfg.policy.action_chunk_size,
-        )
+        if cfg.method.replay.enabled:
+            raise ValueError("Seen replay is only defined for target fine-tuning.")
+        return {"target": _make_dataset(cfg, split.suite, list(split.task_ids), split.demos_per_task)}
 
     if cfg.run.stage == "target":
         if cfg.run.task_id is None or cfg.run.budget is None:
@@ -41,15 +52,49 @@ def _dataset_from_config(cfg: DictConfig) -> LiberoHDF5Dataset:
             raise ValueError(f"Task {cfg.run.task_id} is not in the fixed target split.")
         if cfg.run.budget not in cfg.data.goal.budgets:
             raise ValueError(f"Budget {cfg.run.budget} is not in the fixed target budgets.")
-        return LiberoHDF5Dataset(
-            cfg.data.root,
-            cfg.data.goal.suite,
-            [cfg.run.task_id],
-            cfg.run.budget,
-            cfg.policy.action_chunk_size,
-        )
+        datasets = {
+            "target": _make_dataset(
+                cfg,
+                cfg.data.goal.suite,
+                [cfg.run.task_id],
+                cfg.run.budget,
+            )
+        }
+        if cfg.method.replay.enabled:
+            split = cfg.data.seen
+            datasets["seen"] = _make_dataset(
+                cfg,
+                split.suite,
+                list(split.task_ids),
+                split.demos_per_task,
+            )
+        return datasets
 
     raise ValueError(f"Unknown run.stage: {cfg.run.stage}")
+
+
+def _microbatch_sources(cfg: DictConfig) -> tuple[str, ...]:
+    if not cfg.method.replay.enabled:
+        return ("target",) * cfg.training.gradient_accumulation_steps
+
+    target_count = cfg.method.replay.target_microbatches
+    seen_count = cfg.method.replay.seen_microbatches
+    if target_count <= 0 or seen_count <= 0:
+        raise ValueError("Seen replay needs positive target and seen microbatch counts.")
+    pattern = ("target",) * target_count + ("seen",) * seen_count
+    if cfg.training.gradient_accumulation_steps % len(pattern) != 0:
+        raise ValueError(
+            "gradient_accumulation_steps must be divisible by the replay microbatch pattern length."
+        )
+    return pattern * (cfg.training.gradient_accumulation_steps // len(pattern))
+
+
+def _next_raw_batch(iterator, dataloader):
+    try:
+        return next(iterator), iterator
+    except StopIteration:
+        iterator = iter(dataloader)
+        return next(iterator), iterator
 
 
 def _output_dir(cfg: DictConfig) -> Path:
@@ -122,6 +167,13 @@ def _load_resume_config(cfg: DictConfig) -> tuple[DictConfig, Path | None]:
     if not config_path.exists():
         raise FileNotFoundError(f"Resume checkpoint has no training config: {config_path}")
     saved_cfg = OmegaConf.load(config_path)
+    if "method" not in saved_cfg:
+        saved_cfg.method = OmegaConf.create(
+            {
+                "name": "baseline",
+                "replay": {"enabled": False, "target_microbatches": 1, "seen_microbatches": 0},
+            }
+        )
     saved_cfg.run.resume_checkpoint = str(checkpoint_dir)
     return saved_cfg, checkpoint_dir
 
@@ -204,20 +256,25 @@ def main(cfg: DictConfig) -> None:
     seed_everything(cfg.run.seed)
 
     steps, warmup_steps, checkpoint_every = _training_schedule(cfg)
-    dataset = _dataset_from_config(cfg)
+    datasets = _datasets_from_config(cfg)
+    target_dataset = datasets["target"]
     if resume_checkpoint_dir is None:
-        stats = _normalization_stats(cfg, dataset)
+        stats = _normalization_stats(cfg, target_dataset)
         policy_checkpoint = cfg.run.init_checkpoint
     else:
         policy_checkpoint = resume_checkpoint_dir / "policy"
         stats = torch.load(policy_checkpoint / "dataset_stats.pt", map_location="cpu", weights_only=True)
-    dataloader = DataLoader(
-        dataset,
-        batch_size=cfg.training.micro_batch_size,
-        shuffle=True,
-        num_workers=cfg.training.num_workers,
-        pin_memory=True,
-    )
+    dataloaders = {
+        name: DataLoader(
+            dataset,
+            batch_size=cfg.training.micro_batch_size,
+            shuffle=True,
+            num_workers=cfg.training.num_workers,
+            pin_memory=True,
+        )
+        for name, dataset in datasets.items()
+    }
+    microbatch_sources = _microbatch_sources(cfg)
     policy = load_libero_policy(
         policy_checkpoint,
         cfg.runtime.device,
@@ -258,13 +315,30 @@ def main(cfg: DictConfig) -> None:
         step = training_state["step"]
         logging.info("resumed from checkpoint step %s: %s", step, resume_checkpoint_dir)
 
+    data_manifest = target_dataset.source_manifest()
+    if cfg.method.replay.enabled:
+        data_manifest = {name: dataset.source_manifest() for name, dataset in datasets.items()}
     run_metadata = {
         "run": OmegaConf.to_container(cfg.run, resolve=True),
-        "data_manifest": dataset.source_manifest(),
+        "method": OmegaConf.to_container(cfg.method, resolve=True),
+        "data_manifest": data_manifest,
         "trainable_parameters": count_trainable_parameters(policy),
     }
     _write_json(output_dir / "run.json", run_metadata)
-    logging.info("frames=%s episodes=%s trainable_parameters=%s", len(dataset), len(dataset.episodes), run_metadata["trainable_parameters"])
+    logging.info(
+        "target_frames=%s target_episodes=%s trainable_parameters=%s",
+        len(target_dataset),
+        len(target_dataset.episodes),
+        run_metadata["trainable_parameters"],
+    )
+    if cfg.method.replay.enabled:
+        seen_dataset = datasets["seen"]
+        logging.info(
+            "seen_replay_frames=%s seen_replay_episodes=%s microbatch_sources=%s",
+            len(seen_dataset),
+            len(seen_dataset.episodes),
+            microbatch_sources,
+        )
 
     wandb_run = None
     if cfg.wandb.enabled:
@@ -277,7 +351,7 @@ def main(cfg: DictConfig) -> None:
             config=OmegaConf.to_container(cfg, resolve=True),
         )
 
-    data_iterator = iter(dataloader)
+    data_iterators = {name: iter(dataloader) for name, dataloader in dataloaders.items()}
     policy.train()
     optimizer.zero_grad(set_to_none=True)
     interval_loss = 0.0
@@ -285,12 +359,10 @@ def main(cfg: DictConfig) -> None:
 
     while step < steps:
         step_loss = 0.0
-        for _ in range(cfg.training.gradient_accumulation_steps):
-            try:
-                raw_batch = next(data_iterator)
-            except StopIteration:
-                data_iterator = iter(dataloader)
-                raw_batch = next(data_iterator)
+        for source in microbatch_sources:
+            raw_batch, data_iterators[source] = _next_raw_batch(
+                data_iterators[source], dataloaders[source]
+            )
             batch = preprocessor(raw_batch)
             with torch.autocast(device_type="cuda", dtype=amp_dtype):
                 loss, loss_dict = policy(batch)
@@ -352,7 +424,8 @@ def main(cfg: DictConfig) -> None:
             )
             logging.info("saved checkpoint: %s", policy_dir)
 
-    dataset.close()
+    for dataset in datasets.values():
+        dataset.close()
     if wandb_run is not None:
         wandb_run.finish()
 
