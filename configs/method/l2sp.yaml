@@ -1,4 +1,4 @@
-name: baseline
+name: l2sp
 
 replay:
   enabled: false
@@ -6,5 +6,5 @@ replay:
   seen_microbatches: 0
 
 l2sp:
-  enabled: false
-  weight: 0.0
+  enabled: true
+  weight: 1.0e-2

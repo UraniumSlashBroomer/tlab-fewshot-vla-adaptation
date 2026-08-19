@@ -33,6 +33,11 @@ def _wrong_instruction(task_id: int, task_ids: list[int], configured_id: int | N
     return benchmark.get_benchmark_dict()["libero_goal"]().get_task(wrong_task_id).language
 
 
+def _render_agentview(libero_env):
+    raw_observation = libero_env._env.env._get_observations()
+    return raw_observation["agentview_image"][::-1, ::-1]
+
+
 def _evaluate_task(cfg: DictConfig, policy, preprocessor, postprocessor, task_id: int) -> dict:
     from gymnasium.vector import SyncVectorEnv
     from lerobot.envs.configs import LiberoEnv as LiberoEnvConfig
@@ -71,6 +76,10 @@ def _evaluate_task(cfg: DictConfig, policy, preprocessor, postprocessor, task_id
     videos_dir = None
     if cfg.evaluation.videos_per_task:
         videos_dir = Path(cfg.output_dir) / "videos" / f"task_{task_id}"
+        for libero_env in env.envs:
+            # LeRobot's LiberoEnv.render() hard-codes the default image key,
+            # while this project maps observations to camera1/camera2.
+            libero_env.render = lambda libero_env=libero_env: _render_agentview(libero_env)
     result = eval_policy(
         env,
         policy,

@@ -31,3 +31,4 @@ third_party/LIBERO/
 # Local research reading material; derived summaries remain tracked.
 research/papers/*.pdf
 research/hypothesis.md
+research/code_review_qa.md

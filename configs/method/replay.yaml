@@ -4,3 +4,7 @@ replay:
   enabled: true
   target_microbatches: 3
   seen_microbatches: 1
+
+l2sp:
+  enabled: false
+  weight: 0.0

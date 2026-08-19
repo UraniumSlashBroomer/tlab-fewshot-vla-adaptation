@@ -1,5 +1,3 @@
-"""Train the fixed SmolVLA LIBERO baseline from raw HDF5 demonstrations."""
-
 import json
 import logging
 import math
@@ -40,9 +38,9 @@ def _make_dataset(
 
 def _datasets_from_config(cfg: DictConfig) -> dict[str, LiberoHDF5Dataset]:
     if cfg.run.stage == "seen":
+        if cfg.method.replay.enabled or cfg.method.l2sp.enabled:
+            raise ValueError("Adaptation methods are only defined for target fine-tuning.")
         split = cfg.data.seen
-        if cfg.method.replay.enabled:
-            raise ValueError("Seen replay is only defined for target fine-tuning.")
         return {"target": _make_dataset(cfg, split.suite, list(split.task_ids), split.demos_per_task)}
 
     if cfg.run.stage == "target":
@@ -95,6 +93,22 @@ def _next_raw_batch(iterator, dataloader):
     except StopIteration:
         iterator = iter(dataloader)
         return next(iterator), iterator
+
+
+def _l2sp_anchor(policy) -> dict[str, torch.Tensor]:
+    return {
+        name: parameter.detach().clone()
+        for name, parameter in policy.named_parameters()
+        if parameter.requires_grad
+    }
+
+
+def _l2sp_distance(policy, anchor: dict[str, torch.Tensor]) -> torch.Tensor:
+    return sum(
+        (parameter - anchor[name]).square().sum()
+        for name, parameter in policy.named_parameters()
+        if parameter.requires_grad
+    )
 
 
 def _output_dir(cfg: DictConfig) -> Path:
@@ -172,8 +186,11 @@ def _load_resume_config(cfg: DictConfig) -> tuple[DictConfig, Path | None]:
             {
                 "name": "baseline",
                 "replay": {"enabled": False, "target_microbatches": 1, "seen_microbatches": 0},
+                "l2sp": {"enabled": False, "weight": 0.0},
             }
         )
+    elif "l2sp" not in saved_cfg.method:
+        saved_cfg.method.l2sp = OmegaConf.create({"enabled": False, "weight": 0.0})
     saved_cfg.run.resume_checkpoint = str(checkpoint_dir)
     return saved_cfg, checkpoint_dir
 
@@ -286,6 +303,7 @@ def main(cfg: DictConfig) -> None:
         train_state_proj=cfg.policy.train_state_proj,
     )
     preprocessor, _ = make_libero_processors(policy.config, stats)
+    l2sp_reference = _l2sp_anchor(policy) if cfg.method.l2sp.enabled else None
     optimizer = torch.optim.AdamW(
         (parameter for parameter in policy.parameters() if parameter.requires_grad),
         lr=cfg.training.learning_rate,
@@ -339,6 +357,8 @@ def main(cfg: DictConfig) -> None:
             len(seen_dataset.episodes),
             microbatch_sources,
         )
+    if l2sp_reference is not None:
+        logging.info("l2sp_weight=%s anchored_parameters=%s", cfg.method.l2sp.weight, len(l2sp_reference))
 
     wandb_run = None
     if cfg.wandb.enabled:
@@ -355,6 +375,9 @@ def main(cfg: DictConfig) -> None:
     policy.train()
     optimizer.zero_grad(set_to_none=True)
     interval_loss = 0.0
+    interval_flow_loss = 0.0
+    interval_l2sp_distance = 0.0
+    interval_l2sp_penalty = 0.0
     interval_start = time.perf_counter()
 
     while step < steps:
@@ -365,11 +388,23 @@ def main(cfg: DictConfig) -> None:
             )
             batch = preprocessor(raw_batch)
             with torch.autocast(device_type="cuda", dtype=amp_dtype):
-                loss, loss_dict = policy(batch)
+                flow_loss, loss_dict = policy(batch)
+            if l2sp_reference is None:
+                l2sp_distance = None
+                l2sp_penalty = None
+                loss = flow_loss
+            else:
+                l2sp_distance = _l2sp_distance(policy, l2sp_reference)
+                l2sp_penalty = cfg.method.l2sp.weight * l2sp_distance
+                loss = flow_loss + l2sp_penalty
             if not torch.isfinite(loss):
                 raise RuntimeError(f"Non-finite training loss before backward: {loss}")
             scaler.scale(loss / cfg.training.gradient_accumulation_steps).backward()
             step_loss += loss.item()
+            if l2sp_distance is not None:
+                interval_flow_loss += flow_loss.item()
+                interval_l2sp_distance += l2sp_distance.item()
+                interval_l2sp_penalty += l2sp_penalty.item()
 
         if step == 0:
             has_gradient = any(
@@ -403,10 +438,22 @@ def main(cfg: DictConfig) -> None:
                 "updates_per_second": cfg.training.log_every_steps / elapsed,
                 **loss_dict,
             }
+            if l2sp_reference is not None:
+                microbatches_per_interval = cfg.training.log_every_steps * len(microbatch_sources)
+                log_values.update(
+                    {
+                        "flow_loss": interval_flow_loss / microbatches_per_interval,
+                        "l2sp_distance": interval_l2sp_distance / microbatches_per_interval,
+                        "l2sp_penalty": interval_l2sp_penalty / microbatches_per_interval,
+                    }
+                )
             logging.info("%s", json.dumps(log_values, sort_keys=True))
             if wandb_run is not None:
                 wandb_run.log(log_values, step=step)
             interval_loss = 0.0
+            interval_flow_loss = 0.0
+            interval_l2sp_distance = 0.0
+            interval_l2sp_penalty = 0.0
             interval_start = time.perf_counter()
 
         if step % checkpoint_every == 0 or step == steps:
