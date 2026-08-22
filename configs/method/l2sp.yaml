@@ -8,3 +8,9 @@ replay:
 l2sp:
   enabled: true
   weight: 1.0e-2
+
+lora:
+  enabled: false
+  rank: 0
+  alpha: 0
+  dropout: 0.0

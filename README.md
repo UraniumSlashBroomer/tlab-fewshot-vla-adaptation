@@ -44,6 +44,10 @@ python train.py run.stage=seen run.seed=0
 python train.py run.stage=target run.task_id=0 run.budget=5 run.seed=0 \
   run.init_checkpoint=outputs/seen_seed_0/checkpoints/step_030000/policy
 
+# LoRA adaptation uses the same target-data protocol with a separate output path.
+python train.py method=lora run.stage=target run.task_id=0 run.budget=5 run.seed=0 \
+  run.init_checkpoint=outputs/seen_seed_0/checkpoints/step_030000/policy
+
 # Resume an interrupted run from its most recent checkpoint.
 # The saved training configuration, optimizer, scheduler, AMP scaler, and RNG states are restored.
 python train.py run.resume_checkpoint=outputs/seen_seed_0/checkpoints/step_030000

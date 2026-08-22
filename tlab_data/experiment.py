@@ -30,6 +30,7 @@ def load_libero_policy(
     freeze_vision_encoder: bool | None = None,
     train_expert_only: bool | None = None,
     train_state_proj: bool | None = None,
+    adapter_trainable: bool = False,
 ) -> SmolVLAPolicy:
     # The checkpoint config includes a top-level policy type, so it must be
     # dispatched through the base config class before applying LIBERO overrides.
@@ -47,10 +48,56 @@ def load_libero_policy(
     if train_state_proj is not None:
         config.train_state_proj = train_state_proj
     config.device = device
-    policy = SmolVLAPolicy.from_pretrained(checkpoint, config=config, strict=True)
+    checkpoint_path = Path(checkpoint)
+    adapter_config_path = checkpoint_path / "adapter_config.json"
+    if adapter_config_path.exists():
+        from peft import PeftConfig, PeftModel
+
+        adapter_config = PeftConfig.from_pretrained(checkpoint_path)
+        policy = SmolVLAPolicy.from_pretrained(
+            adapter_config.base_model_name_or_path,
+            config=config,
+            strict=True,
+        )
+        policy = PeftModel.from_pretrained(
+            policy,
+            checkpoint_path,
+            config=adapter_config,
+            is_trainable=adapter_trainable,
+        )
+    else:
+        policy = SmolVLAPolicy.from_pretrained(checkpoint, config=config, strict=True)
     if model_dtype is not None:
         policy.to(dtype=model_dtype)
     return policy
+
+
+def wrap_with_lora(
+    policy: SmolVLAPolicy,
+    base_checkpoint: str | Path,
+    *,
+    rank: int,
+    alpha: int,
+    dropout: float,
+):
+    policy.config.pretrained_path = str(base_checkpoint)
+    return policy.wrap_with_peft(
+        peft_cli_overrides={
+            "method_type": "lora",
+            "r": rank,
+            "lora_alpha": alpha,
+            "lora_dropout": dropout,
+        }
+    )
+
+
+def save_libero_policy(policy, save_directory: str | Path) -> None:
+    save_directory = Path(save_directory)
+    if hasattr(policy, "peft_config"):
+        policy.save_pretrained(save_directory)
+        policy.get_base_model().config.save_pretrained(save_directory)
+    else:
+        policy.save_pretrained(save_directory)
 
 
 def make_libero_processors(config: SmolVLAConfig, stats: dict[str, dict[str, torch.Tensor]]):

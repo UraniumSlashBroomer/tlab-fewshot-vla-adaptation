@@ -16,7 +16,9 @@ from tlab_data.experiment import (
     count_trainable_parameters,
     load_libero_policy,
     make_libero_processors,
+    save_libero_policy,
     seed_everything,
+    wrap_with_lora,
 )
 from tlab_data.libero_hdf5 import LiberoHDF5Dataset
 
@@ -37,8 +39,14 @@ def _make_dataset(
 
 
 def _datasets_from_config(cfg: DictConfig) -> dict[str, LiberoHDF5Dataset]:
+    enabled_methods = sum(
+        (cfg.method.replay.enabled, cfg.method.l2sp.enabled, cfg.method.lora.enabled)
+    )
+    if enabled_methods > 1:
+        raise ValueError("Choose exactly one adaptation method for a target run.")
+
     if cfg.run.stage == "seen":
-        if cfg.method.replay.enabled or cfg.method.l2sp.enabled:
+        if cfg.method.replay.enabled or cfg.method.l2sp.enabled or cfg.method.lora.enabled:
             raise ValueError("Adaptation methods are only defined for target fine-tuning.")
         split = cfg.data.seen
         return {"target": _make_dataset(cfg, split.suite, list(split.task_ids), split.demos_per_task)}
@@ -117,7 +125,8 @@ def _output_dir(cfg: DictConfig) -> Path:
     if cfg.run.stage == "seen":
         name = f"seen_seed_{cfg.run.seed}"
     else:
-        name = f"target_{cfg.run.task_id}_budget_{cfg.run.budget}_seed_{cfg.run.seed}"
+        prefix = "" if cfg.method.name == "baseline" else f"{cfg.method.name}_"
+        name = f"{prefix}target_{cfg.run.task_id}_budget_{cfg.run.budget}_seed_{cfg.run.seed}"
     return Path("outputs") / name
 
 
@@ -191,6 +200,10 @@ def _load_resume_config(cfg: DictConfig) -> tuple[DictConfig, Path | None]:
         )
     elif "l2sp" not in saved_cfg.method:
         saved_cfg.method.l2sp = OmegaConf.create({"enabled": False, "weight": 0.0})
+    if "lora" not in saved_cfg.method:
+        saved_cfg.method.lora = OmegaConf.create(
+            {"enabled": False, "rank": 0, "alpha": 0, "dropout": 0.0}
+        )
     saved_cfg.run.resume_checkpoint = str(checkpoint_dir)
     return saved_cfg, checkpoint_dir
 
@@ -227,7 +240,7 @@ def _save_checkpoint(
     if temporary_dir.exists():
         shutil.rmtree(temporary_dir)
     policy_dir = temporary_dir / "policy"
-    policy.save_pretrained(policy_dir)
+    save_libero_policy(policy, policy_dir)
     torch.save(stats, policy_dir / "dataset_stats.pt")
     OmegaConf.save(cfg, temporary_dir / "training_config.yaml", resolve=True)
     torch.save(
@@ -301,7 +314,16 @@ def main(cfg: DictConfig) -> None:
         freeze_vision_encoder=cfg.policy.freeze_vision_encoder,
         train_expert_only=cfg.policy.train_expert_only,
         train_state_proj=cfg.policy.train_state_proj,
+        adapter_trainable=resume_checkpoint_dir is not None and cfg.method.lora.enabled,
     )
+    if cfg.method.lora.enabled and resume_checkpoint_dir is None:
+        policy = wrap_with_lora(
+            policy,
+            cfg.run.init_checkpoint,
+            rank=cfg.method.lora.rank,
+            alpha=cfg.method.lora.alpha,
+            dropout=cfg.method.lora.dropout,
+        )
     preprocessor, _ = make_libero_processors(policy.config, stats)
     l2sp_reference = _l2sp_anchor(policy) if cfg.method.l2sp.enabled else None
     optimizer = torch.optim.AdamW(

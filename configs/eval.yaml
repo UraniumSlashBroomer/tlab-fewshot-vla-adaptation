@@ -11,7 +11,9 @@ evaluation:
   task_ids: [0, 1, 2]
   episodes_per_task: 40
   first_rollout_seed: 10000
+  policy_sampling_seed: 0
   num_envs: 4
+  initial_state_id: null
   language_control: false
   language_control_task_id: null
   videos_per_task: 0

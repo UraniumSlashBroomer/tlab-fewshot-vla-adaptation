@@ -8,7 +8,7 @@ import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from tlab_data.experiment import load_libero_policy, make_libero_processors
+from tlab_data.experiment import load_libero_policy, make_libero_processors, seed_everything
 
 
 def _write_json(path: Path, contents: dict) -> None:
@@ -61,6 +61,12 @@ def _evaluate_task(cfg: DictConfig, policy, preprocessor, postprocessor, task_id
         },
     )
     env = envs_by_suite[cfg.evaluation.suite][task_id]
+    initial_state_id = cfg.evaluation.initial_state_id
+    if initial_state_id is not None:
+        if cfg.evaluation.num_envs != 1 or cfg.evaluation.episodes_per_task != 1:
+            raise ValueError("initial_state_id is only supported for one single-environment rollout.")
+        env.envs[0].init_state_id = initial_state_id
+
     env_config = LiberoEnvConfig(task=cfg.evaluation.suite, task_ids=[task_id])
     env_preprocessor, env_postprocessor = make_env_pre_post_processors(env_config, policy.config)
 
@@ -80,6 +86,8 @@ def _evaluate_task(cfg: DictConfig, policy, preprocessor, postprocessor, task_id
             # LeRobot's LiberoEnv.render() hard-codes the default image key,
             # while this project maps observations to camera1/camera2.
             libero_env.render = lambda libero_env=libero_env: _render_agentview(libero_env)
+
+    seed_everything(cfg.evaluation.policy_sampling_seed + task_id)
     result = eval_policy(
         env,
         policy,
