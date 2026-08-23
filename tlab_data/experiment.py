@@ -24,6 +24,7 @@ def load_libero_policy(
     checkpoint: str | Path,
     device: str,
     *,
+    adapter_base_checkpoint: str | Path | None = None,
     model_dtype: torch.dtype | None = None,
     action_chunk_size: int | None = None,
     action_execution_steps: int | None = None,
@@ -55,7 +56,7 @@ def load_libero_policy(
 
         adapter_config = PeftConfig.from_pretrained(checkpoint_path)
         policy = SmolVLAPolicy.from_pretrained(
-            adapter_config.base_model_name_or_path,
+            adapter_base_checkpoint or adapter_config.base_model_name_or_path,
             config=config,
             strict=True,
         )

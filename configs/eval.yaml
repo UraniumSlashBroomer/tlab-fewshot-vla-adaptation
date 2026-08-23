@@ -1,4 +1,5 @@
 checkpoint: null
+base_checkpoint: null  # Local seen checkpoint required when evaluating a LoRA adapter.
 output_dir: null
 
 runtime:
@@ -9,14 +10,15 @@ runtime:
 evaluation:
   suite: libero_goal
   task_ids: [0, 1, 2]
-  episodes_per_task: 40
+  episodes_per_task: 20
   first_rollout_seed: 10000
   policy_sampling_seed: 0
-  num_envs: 4
+  num_envs: 1
   initial_state_id: null
   language_control: false
   language_control_task_id: null
   videos_per_task: 0
+  video_layout: agentview  # agentview or agentview_wrist
 
 wandb:
   enabled: false

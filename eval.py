@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import hydra
+import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 
@@ -36,6 +37,14 @@ def _wrong_instruction(task_id: int, task_ids: list[int], configured_id: int | N
 def _render_agentview(libero_env):
     raw_observation = libero_env._env.env._get_observations()
     return raw_observation["agentview_image"][::-1, ::-1]
+
+
+def _render_agentview_and_wrist(libero_env):
+    raw_observation = libero_env._env.env._get_observations()
+    agentview = raw_observation["agentview_image"][::-1, ::-1]
+    wrist = raw_observation["robot0_eye_in_hand_image"][::-1, ::-1]
+    divider = np.full((agentview.shape[0], 4, 3), 255, dtype=agentview.dtype)
+    return np.concatenate((agentview, divider, wrist), axis=1)
 
 
 def _evaluate_task(cfg: DictConfig, policy, preprocessor, postprocessor, task_id: int) -> dict:
@@ -82,10 +91,16 @@ def _evaluate_task(cfg: DictConfig, policy, preprocessor, postprocessor, task_id
     videos_dir = None
     if cfg.evaluation.videos_per_task:
         videos_dir = Path(cfg.output_dir) / "videos" / f"task_{task_id}"
+        if cfg.evaluation.video_layout == "agentview":
+            render = _render_agentview
+        elif cfg.evaluation.video_layout == "agentview_wrist":
+            render = _render_agentview_and_wrist
+        else:
+            raise ValueError(f"Unknown video layout: {cfg.evaluation.video_layout}")
         for libero_env in env.envs:
             # LeRobot's LiberoEnv.render() hard-codes the default image key,
             # while this project maps observations to camera1/camera2.
-            libero_env.render = lambda libero_env=libero_env: _render_agentview(libero_env)
+            libero_env.render = lambda libero_env=libero_env: render(libero_env)
 
     seed_everything(cfg.evaluation.policy_sampling_seed + task_id)
     result = eval_policy(
@@ -121,6 +136,7 @@ def main(cfg: DictConfig) -> None:
     policy = load_libero_policy(
         policy_dir,
         cfg.runtime.device,
+        adapter_base_checkpoint=cfg.base_checkpoint,
         model_dtype=_torch_dtype(cfg.runtime.model_dtype),
     )
     preprocessor, postprocessor = make_libero_processors(policy.config, stats)
