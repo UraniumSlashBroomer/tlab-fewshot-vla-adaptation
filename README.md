@@ -9,8 +9,7 @@
 held-out задачам LIBERO. Протокол и интерпретация результатов описаны в
 [отчёте](report.pdf).
 
-Обучение проводилось на Kaggle/Linux с Tesla P100 и Python 3.12.13. Online
-evaluation проводился отдельно на Windows с GeForce GTX 1660 Ti.
+<img width="1166" height="442" alt="image" src="https://github.com/user-attachments/assets/ab18bbe4-7ea0-4967-a99e-e0fc369f57f2" />
 
 ## Содержание
 
@@ -211,10 +210,10 @@ training seed для каждого метода.
 This repository reproduces adaptation experiments for
 [`lerobot/smolvla_base`](https://huggingface.co/lerobot/smolvla_base) on three
 held-out LIBERO tasks. The protocol and interpretation of the results are
-described in the [report](report.pdf).
+described in the [report](report_eng.pdf).
 
-Training was performed on Kaggle/Linux with a Tesla P100 and Python 3.12.13.
-Online evaluation was performed separately on Windows with a GeForce GTX 1660 Ti.
+<img width="1178" height="435" alt="image" src="https://github.com/user-attachments/assets/f4b9838e-3ee0-4d1f-a9c6-10061602c8ce" />
+
 
 ## Contents
 
