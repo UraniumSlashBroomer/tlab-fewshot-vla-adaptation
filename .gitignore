@@ -22,6 +22,7 @@ wandb/
 *.ckpt
 *.safetensors
 /data/
+/checkpoints/
 outputs/
 tmp/
 
@@ -33,3 +34,5 @@ research/papers/*.pdf
 research/hypothesis.md
 research/code_review_qa.md
 research/task_updated.md
+
+kaggle_notebooks/*

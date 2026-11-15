@@ -1,0 +1,7 @@
+defaults:
+  - baseline
+  - _self_
+
+name: repetition
+depth:
+  mode: repetition

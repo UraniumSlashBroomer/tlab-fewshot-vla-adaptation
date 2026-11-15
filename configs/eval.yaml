@@ -2,6 +2,11 @@ checkpoint: null
 base_checkpoint: null  # Local seen checkpoint required when evaluating a LoRA adapter.
 output_dir: null
 
+depth:
+  mode: null  # null: use checkpoint sidecar; skipping/repetition: override (also for baseline controls)
+  n: 0
+  sampling_seed: 0
+
 runtime:
   device: cuda
   model_dtype: float32

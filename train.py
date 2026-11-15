@@ -21,6 +21,7 @@ from tlab_data.experiment import (
     wrap_with_lora,
 )
 from tlab_data.libero_hdf5 import LiberoHDF5Dataset
+from tlab_data.depth import configure_depth
 
 
 def _make_dataset(
@@ -39,19 +40,26 @@ def _make_dataset(
 
 
 def _datasets_from_config(cfg: DictConfig) -> dict[str, LiberoHDF5Dataset]:
+    depth_enabled = cfg.method.get("depth") is not None
     enabled_methods = sum(
-        (cfg.method.replay.enabled, cfg.method.l2sp.enabled, cfg.method.lora.enabled)
+        (cfg.method.replay.enabled, cfg.method.l2sp.enabled, cfg.method.lora.enabled, depth_enabled)
     )
     if enabled_methods > 1:
         raise ValueError("Choose exactly one adaptation method for a target run.")
 
     if cfg.run.stage == "seen":
-        if cfg.method.replay.enabled or cfg.method.l2sp.enabled or cfg.method.lora.enabled:
+        if enabled_methods:
             raise ValueError("Adaptation methods are only defined for target fine-tuning.")
         split = cfg.data.seen
         return {"target": _make_dataset(cfg, split.suite, list(split.task_ids), split.demos_per_task)}
 
     if cfg.run.stage == "target":
+        if depth_enabled and (
+            cfg.run.task_id != 0
+            or cfg.run.budget not in (5, 10, 25)
+            or cfg.run.seed not in (0, 1)
+        ):
+            raise ValueError("Depth experiments use only task 0, budgets 5/10/25 and seeds 0/1.")
         if cfg.run.task_id is None or cfg.run.budget is None:
             raise ValueError("Target training requires run.task_id and run.budget.")
         if cfg.run.task_id not in cfg.data.goal.task_ids:
@@ -250,6 +258,10 @@ def _save_checkpoint(
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
             "rng": _rng_state(),
+            "depth_rng": (
+                policy.model.vlm_with_expert.depth_schedule.rng.getstate()
+                if cfg.method.get("depth") is not None else None
+            ),
         },
         temporary_dir / "training_state.pt",
     )
@@ -324,6 +336,9 @@ def main(cfg: DictConfig) -> None:
             alpha=cfg.method.lora.alpha,
             dropout=cfg.method.lora.dropout,
         )
+    depth_schedule = None
+    if cfg.method.get("depth") is not None:
+        depth_schedule = configure_depth(policy, cfg.method.depth.mode, seed=cfg.run.seed)
     preprocessor, _ = make_libero_processors(policy.config, stats)
     l2sp_reference = _l2sp_anchor(policy) if cfg.method.l2sp.enabled else None
     optimizer = torch.optim.AdamW(
@@ -352,6 +367,8 @@ def main(cfg: DictConfig) -> None:
         scheduler.load_state_dict(training_state["scheduler"])
         scaler.load_state_dict(training_state["scaler"])
         _restore_rng_state(training_state["rng"])
+        if depth_schedule is not None:
+            depth_schedule.rng.setstate(training_state["depth_rng"])
         step = training_state["step"]
         logging.info("resumed from checkpoint step %s: %s", step, resume_checkpoint_dir)
 
@@ -364,6 +381,14 @@ def main(cfg: DictConfig) -> None:
         "data_manifest": data_manifest,
         "trainable_parameters": count_trainable_parameters(policy),
     }
+    if depth_schedule is not None:
+        run_metadata["depth"] = {
+            "mode": depth_schedule.mode,
+            "unit": "block",
+            "n_values": [0, 1, 2],
+            "eligible_layers": list(range(depth_schedule.num_layers)),
+            "attention_types": ["SA" if i % 2 == 0 else "CA" for i in range(depth_schedule.num_layers)],
+        }
     _write_json(output_dir / "run.json", run_metadata)
     logging.info(
         "target_frames=%s target_episodes=%s trainable_parameters=%s",
@@ -409,6 +434,8 @@ def main(cfg: DictConfig) -> None:
                 data_iterators[source], dataloaders[source]
             )
             batch = preprocessor(raw_batch)
+            if depth_schedule is not None:
+                depth_schedule.sample_training_batch()
             with torch.autocast(device_type="cuda", dtype=amp_dtype):
                 flow_loss, loss_dict = policy(batch)
             if l2sp_reference is None:

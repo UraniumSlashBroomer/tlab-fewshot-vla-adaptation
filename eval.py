@@ -10,6 +10,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from tlab_data.experiment import load_libero_policy, make_libero_processors, seed_everything
+from tlab_data.depth import configure_depth, configure_depth_evaluation, get_depth_schedule
 
 
 def _write_json(path: Path, contents: dict) -> None:
@@ -53,6 +54,12 @@ def _evaluate_task(cfg: DictConfig, policy, preprocessor, postprocessor, task_id
     from lerobot.envs.factory import make_env_pre_post_processors
     from lerobot.envs.libero import create_libero_envs
     from lerobot.scripts.lerobot_eval import eval_policy
+
+    depth_schedule = get_depth_schedule(policy)
+    if depth_schedule is not None:
+        if cfg.evaluation.num_envs != 1 or list(cfg.evaluation.task_ids) != [0]:
+            raise ValueError("Depth evaluation requires num_envs=1 and evaluation.task_ids=[0].")
+        configure_depth_evaluation(policy, cfg.depth.n, cfg.depth.sampling_seed, task_id)
 
     envs_by_suite = create_libero_envs(
         task=cfg.evaluation.suite,
@@ -115,6 +122,14 @@ def _evaluate_task(cfg: DictConfig, policy, preprocessor, postprocessor, task_id
         videos_dir=videos_dir,
         start_seed=cfg.evaluation.first_rollout_seed,
     )
+    if depth_schedule is not None:
+        result["depth"] = {
+            "mode": depth_schedule.mode,
+            "unit": "block",
+            "n": cfg.depth.n,
+            "sampling_seed": cfg.depth.sampling_seed,
+            "episodes": depth_schedule.episode_records,
+        }
     env.close()
     return result
 
@@ -139,6 +154,10 @@ def main(cfg: DictConfig) -> None:
         adapter_base_checkpoint=cfg.base_checkpoint,
         model_dtype=_torch_dtype(cfg.runtime.model_dtype),
     )
+    if cfg.depth.mode is not None:
+        configure_depth(policy, cfg.depth.mode)
+    elif cfg.depth.n and get_depth_schedule(policy) is None:
+        raise ValueError("Baseline depth controls require depth.mode=skipping or repetition.")
     preprocessor, postprocessor = make_libero_processors(policy.config, stats)
 
     task_results = {}

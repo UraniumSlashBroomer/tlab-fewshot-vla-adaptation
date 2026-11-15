@@ -1,5 +1,6 @@
 """Shared training and evaluation helpers for the fixed LIBERO protocol."""
 
+import json
 import random
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
 from tlab_data.smolvla import configure_for_libero
+from tlab_data.depth import configure_depth, get_depth_schedule
 
 
 def seed_everything(seed: int) -> None:
@@ -70,6 +72,9 @@ def load_libero_policy(
         policy = SmolVLAPolicy.from_pretrained(checkpoint, config=config, strict=True)
     if model_dtype is not None:
         policy.to(dtype=model_dtype)
+    depth_path = checkpoint_path / "depth_config.json"
+    if depth_path.exists():
+        configure_depth(policy, **json.loads(depth_path.read_text()))
     return policy
 
 
@@ -99,6 +104,11 @@ def save_libero_policy(policy, save_directory: str | Path) -> None:
         policy.get_base_model().config.save_pretrained(save_directory)
     else:
         policy.save_pretrained(save_directory)
+    schedule = get_depth_schedule(policy)
+    if schedule is not None:
+        (save_directory / "depth_config.json").write_text(
+            json.dumps({"mode": schedule.mode}, indent=2) + "\n"
+        )
 
 
 def make_libero_processors(config: SmolVLAConfig, stats: dict[str, dict[str, torch.Tensor]]):
