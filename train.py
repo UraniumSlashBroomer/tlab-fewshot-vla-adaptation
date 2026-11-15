@@ -156,10 +156,16 @@ def _normalization_stats(cfg: DictConfig, dataset: LiberoHDF5Dataset) -> dict[st
     if cfg.run.stage == "seen":
         return dataset.seen_dataset_stats()
 
-    stats_path = Path(cfg.run.init_checkpoint) / "dataset_stats.pt"
+    configured_path = cfg.run.get("normalization_stats_path")
+    stats_path = (
+        Path(configured_path)
+        if configured_path is not None
+        else Path(cfg.run.init_checkpoint) / "dataset_stats.pt"
+    )
     if not stats_path.exists():
         raise FileNotFoundError(
-            f"Target fine-tuning requires seen normalization statistics: {stats_path}"
+            f"Target fine-tuning requires LIBERO normalization statistics: {stats_path}. "
+            "Set run.normalization_stats_path when initializing from smolvla_base."
         )
     return torch.load(stats_path, map_location="cpu", weights_only=True)
 

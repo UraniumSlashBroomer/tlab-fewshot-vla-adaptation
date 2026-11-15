@@ -9,6 +9,7 @@ run:
   task_id: null
   budget: null
   init_checkpoint: lerobot/smolvla_base
+  normalization_stats_path: null  # Optional LIBERO stats file, independent of model weights.
   resume_checkpoint: null
   output_dir: null
 
